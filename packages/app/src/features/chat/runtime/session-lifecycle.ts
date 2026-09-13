@@ -1,7 +1,8 @@
 import type { AgentEvent } from "../model/agent-event-parse";
 import { clearRun } from "../model/entry-reducer";
+import { applyPersistedEvents, dropTransientProjections } from "../model/persisted-entries";
 import { applyHistoryPage } from "../model/history-entries";
-import { createHttpRecovery, type SessionRecovery } from "./session-recovery";
+import { createSessionRecovery, type SessionRecovery } from "./session-recovery";
 import {
   createSessionLink,
   type SessionLink,
@@ -25,6 +26,7 @@ export interface SessionLifecycleDeps {
   onLinkOpen(sessionId: string): void;
   deliverEvents(sessionId: string, events: AgentEvent[]): void;
   cancelQueued(sessionId: string): void;
+  flushPending(): void;
 }
 
 export interface SessionLifecycle {
@@ -55,14 +57,16 @@ export function createSessionLifecycle(
     const sessionId = params.sessionId;
     const existing = links.get(sessionId);
     if (existing) {
-      existing.params = params;
+      existing.params = params.initialMessage === undefined && existing.params.initialMessage !== undefined
+        ? { ...params, initialMessage: existing.params.initialMessage }
+        : params;
       return existing.link;
     }
 
     const record: SessionLinkRecord = { link: undefined as unknown as SessionLink, params };
     const link = createSessionLink(() => record.params, {
-      onOpen: () => {
-        recoveries.get(sessionId)?.onOpen();
+      onOpen: (since) => {
+        recoveries.get(sessionId)?.onOpen(since);
         deps.onLinkOpen(sessionId);
       },
       onClose: () => {
@@ -82,16 +86,23 @@ export function createSessionLifecycle(
           return change.state === "fatal" ? clearRun(withConnection) : withConnection;
         });
       },
-      onEvent: (event) => {
+      onFrame: (frame) => {
         const recovery = recoveries.get(sessionId);
-        if (recovery?.onFrame(event)) return;
-        deps.deliverEvents(sessionId, [event]);
+        if (recovery?.onFrame(frame)) return;
+        if (frame.kind === "event") deps.deliverEvents(sessionId, [frame.event]);
+      },
+      getSince: () => {
+        const session = host.getSession(sessionId);
+        if (!session || session.history.status !== "ready" || session.cursor < 0) {
+          return undefined;
+        }
+        return session.cursor;
       },
       isAttached: () => (host.getSession(sessionId)?.attachedCount ?? 0) > 0,
     });
     record.link = link;
 
-    const recovery = createHttpRecovery({
+    const recovery = createSessionRecovery({
       fetchPage: () => record.params.client.getSessionMessagesPage(
         record.params.agentId,
         sessionId,
@@ -105,6 +116,13 @@ export function createSessionLifecycle(
             history: { ...session.history, hasMore: page.hasMore, oldestSeq: page.oldestId },
           };
         });
+      },
+      applyPersistedEvents: (events) => {
+        deps.flushPending();
+        host.updateSession(sessionId, (session) => applyPersistedEvents(session, events, Date.now()));
+      },
+      finishReplay: () => {
+        host.updateSession(sessionId, (session) => dropTransientProjections(session));
       },
       emitEvents: (events) => deps.deliverEvents(sessionId, events),
       setHistory: (status, error) => {
