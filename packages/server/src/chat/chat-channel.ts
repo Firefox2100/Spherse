@@ -117,8 +117,7 @@ export class ChatChannel {
         if (this.running) {
           throw new ConflictError(`Session "${this.sessionId}" is already running`);
         }
-        const seq = await this.runtime.withdrawLastTurn(this.sessionId);
-        this.publish({ type: "turn_withdrawn", seq });
+        await this.runtime.withdrawLastTurn(this.sessionId);
       },
       abort: () => {
         if (active) this.runtime.abortSession(this.sessionId);
@@ -174,12 +173,42 @@ export class ChatChannel {
   }
 
   private subscribeLog(): (() => void) | null {
+    this.initRunStateFromLog();
     return this.runtime.subscribeSessionEvents(this.sessionId, (event) => {
       const wireEvent = this.projector.consumeLogEvent(event);
       if (wireEvent !== undefined) {
         this.publish(wireEvent);
       }
+      if (wireEvent?.type === "run_status" && wireEvent.active === false) {
+        this.cleanupIfIdle();
+      }
     });
+  }
+
+  private initRunStateFromLog(): void {
+    const lastSeq = this.runtime.getSessionLastSeq(this.agentId, this.sessionId);
+    if (lastSeq < 0) return;
+    const PAGE = 200;
+    let since = lastSeq - PAGE;
+    for (;;) {
+      const events = this.runtime.readSessionEventsAfter(
+        this.agentId,
+        this.sessionId,
+        since,
+        PAGE,
+      );
+      if (events.length === 0) return;
+      for (let i = events.length - 1; i >= 0; i--) {
+        if (events[i].type === "turn/end") return;
+        if (events[i].type === "turn/start") {
+          this.projector.markRunActive();
+          return;
+        }
+      }
+      const oldest = events[0].seq;
+      if (oldest <= 0) return;
+      since = oldest - 1 - PAGE;
+    }
   }
 
   private handshake(subscriber: Subscriber, since: number | undefined): void {
@@ -209,7 +238,7 @@ export class ChatChannel {
     }
     this.notify(subscriber, {
       type: "run_status",
-      active: this.running,
+      active: this.projector.isRunActive(),
     });
   }
 
@@ -222,7 +251,7 @@ export class ChatChannel {
     this.running = true;
     this.runEvents = [];
     this.projector.resetRun();
-    this.publish({ type: "run_status", active: true });
+    this.projector.setOwnRun(true);
     try {
       await executor((event) => {
         const enriched = this.projector.enrich(event);
@@ -232,13 +261,16 @@ export class ChatChannel {
     } finally {
       this.running = false;
       this.runEvents = [];
+      this.projector.setOwnRun(false);
       this.projector.clearPendingEcho();
-      this.publish({ type: "run_status", active: false });
       this.cleanupIfIdle();
     }
   }
 
   private recordRunEvent(event: CoreEvent): void {
+    if (event.type === "message_end" && this.dropCompletedMessage(event)) {
+      return;
+    }
     if (event.type === "message_update") {
       for (let i = this.runEvents.length - 1; i >= 0; i--) {
         if (
@@ -274,6 +306,31 @@ export class ChatChannel {
     this.runEvents.push(event);
   }
 
+  private dropCompletedMessage(event: CoreEvent): boolean {
+    const message = (event as { message?: { role?: string; toolCallId?: string } }).message;
+    const messageId = (event as { messageId?: string }).messageId;
+    if (!message) return false;
+    if (message.role === "toolResult" && message.toolCallId !== undefined) {
+      const toolCallId = message.toolCallId;
+      this.runEvents = this.runEvents.filter((item) => {
+        const itemMessage = (item as { message?: { role?: string; toolCallId?: string } }).message;
+        if (itemMessage?.role === "toolResult" && itemMessage.toolCallId === toolCallId) {
+          return false;
+        }
+        return (item as { toolCallId?: string }).toolCallId !== toolCallId;
+      });
+      return true;
+    }
+    if (message.role !== "user" && (event as { seq?: number }).seq === undefined) {
+      return false;
+    }
+    if (messageId === undefined) return false;
+    this.runEvents = this.runEvents.filter(
+      (item) => (item as { messageId?: string }).messageId !== messageId,
+    );
+    return true;
+  }
+
   private publish(event: unknown): void {
     for (const subscriber of this.subscribers) {
       this.notify(subscriber, event);
@@ -292,7 +349,12 @@ export class ChatChannel {
   }
 
   private cleanupIfIdle(): void {
-    if (!this.initialized || this.running || this.attachments > 0) {
+    if (
+      !this.initialized ||
+      this.running ||
+      this.attachments > 0 ||
+      this.projector.isRunActive()
+    ) {
       return;
     }
     this.runtime.destroySession(this.sessionId);

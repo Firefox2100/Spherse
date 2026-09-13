@@ -5,11 +5,14 @@ function createRuntime() {
   let emit: ((event: any) => void) | undefined;
   let finish: (() => void) | undefined;
   let logListener: ((event: any) => void) | undefined;
+  let nextSeq = 0;
+  const appendLog = (event: any) => logListener?.(event);
   const runtime = {
     restoreSession: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn(
-      (_sessionId: string, _content: string, _attachments: unknown, onEvent: (event: any) => void) => {
+      (_sessionId: string, content: string, _attachments: unknown, onEvent: (event: any) => void) => {
         emit = onEvent;
+        appendLog({ type: "turn/start", seq: nextSeq++, time: 1, data: {} });
         return new Promise<void>((resolve) => {
           finish = resolve;
         });
@@ -18,12 +21,17 @@ function createRuntime() {
     retryLastTurn: vi.fn(
       (_sessionId: string, onEvent: (event: any) => void) => {
         emit = onEvent;
+        appendLog({ type: "turn/retried", seq: nextSeq++, time: 1, data: { abandonedSeqs: [] } });
+        appendLog({ type: "turn/start", seq: nextSeq++, time: 1, data: {} });
         return new Promise<void>((resolve) => {
           finish = resolve;
         });
       },
     ),
-    withdrawLastTurn: vi.fn().mockResolvedValue(4),
+    withdrawLastTurn: vi.fn(() => {
+      appendLog({ type: "turn/withdrawn", seq: nextSeq++, time: 1, data: { seq: 4 } });
+      return Promise.resolve(4);
+    }),
     abortSession: vi.fn(),
     resolveControlRequest: vi.fn(),
     destroySession: vi.fn(),
@@ -106,6 +114,7 @@ describe("ChatSessionHub", () => {
     expect(replayed[0]).toEqual({ type: "session_ready", lastSeq: -1, replay: true });
     expect(replayed.at(-1)).toEqual({ type: "run_status", active: true });
 
+    mock.appendLog({ type: "turn/end", seq: 99, time: 1, data: { reason: "completed" } });
     mock.emit({ type: "agent_end", messages: [] });
     mock.finish();
     await run;
@@ -131,19 +140,21 @@ describe("ChatSessionHub", () => {
     const run = attachment.retryLastTurn();
     await vi.waitFor(() => expect(mock.runtime.retryLastTurn).toHaveBeenCalled());
     mock.emit({ type: "agent_start" });
+    mock.appendLog({ type: "turn/end", seq: 99, time: 1, data: { reason: "completed" } });
     mock.emit({ type: "agent_end", messages: [] });
     mock.finish();
     await run;
 
     expect(mock.runtime.retryLastTurn).toHaveBeenCalledWith("s1", expect.any(Function));
     expect(events.map((e) => e.type)).toEqual([
+      "turn_retried",
       "run_status",
       "agent_start",
-      "agent_end",
       "run_status",
+      "agent_end",
     ]);
-    expect(events[0]).toEqual({ type: "run_status", active: true });
-    expect(events.at(-1)).toEqual({ type: "run_status", active: false });
+    expect(events[1]).toEqual({ type: "run_status", active: true });
+    expect(events[3]).toEqual({ type: "run_status", active: false });
     attachment.close();
   });
 
@@ -167,6 +178,77 @@ describe("ChatSessionHub", () => {
     mock.finish();
     await firstRun;
     attachment.close();
+  });
+
+  it("shrinks the run snapshot to in-flight state once messages complete", async () => {
+    const mock = createRuntime();
+    const hub = new ChatSessionHub(logger);
+    const first = hub.attach("p1", mock.runtime as never, "a1", "s1", () => {});
+    await first.ready;
+
+    const run = first.sendMessage("hi");
+    await vi.waitFor(() => expect(mock.runtime.sendMessage).toHaveBeenCalled());
+    mock.emit({ type: "agent_start" });
+
+    const userMessage = { role: "user", content: [{ type: "text", text: "hi" }] };
+    mock.emit({ type: "message_start", message: userMessage });
+    mock.emit({ type: "message_end", message: userMessage });
+
+    const completed = { role: "assistant", content: [{ type: "text", text: "done" }] };
+    mock.emit({ type: "message_start", message: completed });
+    mock.emit({ type: "message_update", message: completed });
+    mock.appendLog({ type: "assistant/message", seq: 5, time: 1, data: { message: completed } });
+    mock.emit({ type: "message_end", message: completed });
+
+    const persistedTool = {
+      role: "toolResult",
+      toolCallId: "tc-done",
+      toolName: "read_file",
+      content: [{ type: "text", text: "data" }],
+      isError: false,
+    };
+    mock.emit({ type: "tool_execution_start", toolCallId: "tc-done", toolName: "read_file", args: {} });
+    mock.emit({ type: "tool_execution_update", toolCallId: "tc-done", toolName: "read_file", args: {}, partialResult: "x" });
+    mock.appendLog({ type: "tool/result", seq: 6, time: 1, data: { message: persistedTool } });
+    mock.emit({ type: "message_end", message: persistedTool });
+
+    mock.emit({ type: "message_start", message: { role: "assistant", content: [] } });
+    mock.emit({ type: "message_update", message: { role: "assistant", content: [{ type: "text", text: "running" }] } });
+    mock.emit({ type: "tool_execution_start", toolCallId: "tc-live", toolName: "run_command", args: {} });
+    mock.emit({ type: "tool_execution_update", toolCallId: "tc-live", toolName: "run_command", args: {}, partialResult: "y" });
+
+    first.close();
+
+    const replayed: any[] = [];
+    const second = hub.attach("p1", mock.runtime as never, "a1", "s1", (event) =>
+      replayed.push(event),
+    );
+    await second.ready;
+
+    expect(replayed.map((event) => event.type)).toEqual([
+      "session_ready",
+      "agent_start",
+      "message_start",
+      "message_update",
+      "tool_execution_start",
+      "tool_execution_update",
+      "run_status",
+    ]);
+    expect(
+      replayed.some((event) => event.message?.role === "user"),
+    ).toBe(false);
+    expect(
+      replayed.some((event) => event.message?.toolCallId === "tc-done"),
+    ).toBe(false);
+    expect(
+      replayed.some((event) => event.toolCallId === "tc-done"),
+    ).toBe(false);
+
+    mock.appendLog({ type: "turn/end", seq: 7, time: 1, data: { reason: "completed" } });
+    mock.emit({ type: "agent_end", messages: [] });
+    mock.finish();
+    await run;
+    second.close();
   });
 
   it("withdrawLastTurn publishes turn_withdrawn with the anchor seq", async () => {
@@ -239,7 +321,9 @@ describe("ChatSessionHub", () => {
     expect(events).toContainEqual({ type: "run_status", active: true });
     expect(mock.runtime.destroySession).not.toHaveBeenCalled();
 
+    mock.appendLog({ type: "turn/end", seq: 99, time: 1, data: { reason: "completed" } });
     mock.emit({ type: "agent_end", messages: [] });
+    mock.appendLog({ type: "turn/end", seq: 4, time: 1, data: { reason: "completed" } });
     mock.finish();
     await vi.waitFor(() =>
       expect(events).toContainEqual({ type: "run_status", active: false }),
@@ -334,7 +418,7 @@ describe("ChatSessionHub", () => {
     ]);
     expect(events[0]).toEqual({ type: "session_ready", lastSeq: 9, replay: true });
     expect(events[1].events.map((event: any) => event.seq)).toEqual([8, 9]);
-    expect(events.at(-1)).toEqual({ type: "run_status", active: false });
+    expect(events.at(-1)).toEqual({ type: "run_status", active: true });
     attachment.close();
   });
 
@@ -452,6 +536,7 @@ describe("ChatSessionHub", () => {
     });
 
     mock.emit({ type: "agent_end", messages: [] });
+    mock.appendLog({ type: "turn/end", seq: 4, time: 1, data: { reason: "completed" } });
     mock.finish();
     await vi.waitFor(() =>
       expect(events).toContainEqual({ type: "run_status", active: false }),
