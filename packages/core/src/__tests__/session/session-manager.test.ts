@@ -4,7 +4,7 @@ import os from "node:os";
 import fs from "node:fs";
 import Database from "better-sqlite3";
 import { createSilentLogger } from "../../logger.js";
-import { ModelNotConfiguredError } from "../../errors.js";
+import { ModelNotConfiguredError, NotFoundError } from "../../errors.js";
 
 const { getChatStreamFnMock, resolveModelByIdMock } = vi.hoisted(() => ({
   getChatStreamFnMock: vi.fn(() => vi.fn()),
@@ -443,6 +443,66 @@ describe("SessionManager lifecycle", () => {
     runtime.projectManager.deleteSession(agentId, sessionId);
 
     expect(runtime.sessionRuntime.sessionExists(agentId, sessionId)).toBe(false);
+  });
+
+  it("releaseSession removes an idle runner and refuses one with a turn in flight", async () => {
+    const sessionId = await runtime.sessionRuntime.createSession(agentId);
+    runtime.sessionRuntime.setDefaultModel("openai/gpt-4o");
+    const agent = activeAgent(runtime as RuntimeInternals, sessionId);
+    agent.subscribe = vi.fn(() => () => {}) as FakeAgent["subscribe"];
+    let finishPrompt!: () => void;
+    agent.prompt = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishPrompt = resolve;
+        }),
+    ) as FakeAgent["prompt"];
+
+    const run = runtime.sessionRuntime.sendMessage(sessionId, "hi", [], () => {});
+    expect(runtime.sessionRuntime.releaseSession(sessionId)).toBe(false);
+    expect(runtime.sessionRuntime.hasActiveSession(sessionId)).toBe(true);
+
+    await vi.waitFor(() => expect(agent.prompt).toHaveBeenCalled());
+    finishPrompt();
+    await run;
+
+    expect(runtime.sessionRuntime.releaseSession(sessionId)).toBe(true);
+    expect(runtime.sessionRuntime.hasActiveSession(sessionId)).toBe(false);
+    expect(runtime.sessionRuntime.releaseSession(sessionId)).toBe(false);
+    expect(runtime.sessionRuntime.releaseSession("missing")).toBe(false);
+  });
+
+  it("restoreSession refuses an archived session", async () => {
+    const sessionId = await runtime.sessionRuntime.createSession(agentId);
+    runtime.sessionRuntime.destroySession(sessionId);
+    runtime.projectManager.deleteSession(agentId, sessionId);
+
+    await expect(runtime.sessionRuntime.restoreSession(agentId, sessionId)).rejects.toThrow(
+      NotFoundError,
+    );
+    expect(runtime.sessionRuntime.hasActiveSession(sessionId)).toBe(false);
+  });
+
+  it("does not resurrect a session archived while initForRestore is in flight", async () => {
+    const agentStore = runtime.projectManager.projectStore.agents.get(agentId) as any;
+    const sessionId = agentStore.sessions.createSession();
+
+    const pending = runtime.sessionRuntime.restoreSession(agentId, sessionId);
+    runtime.projectManager.deleteSession(agentId, sessionId);
+
+    await expect(pending).rejects.toThrow(NotFoundError);
+    expect(runtime.sessionRuntime.hasActiveSession(sessionId)).toBe(false);
+  });
+
+  it("restoreSession maps a closed agent store to NotFoundError", async () => {
+    const agentStore = runtime.projectManager.projectStore.agents.get(agentId) as any;
+    const sessionId = agentStore.sessions.createSession();
+    agentStore.sessions.close();
+
+    await expect(runtime.sessionRuntime.restoreSession(agentId, sessionId)).rejects.toThrow(
+      NotFoundError,
+    );
+    expect(runtime.sessionRuntime.hasActiveSession(sessionId)).toBe(false);
   });
 
   it("automatically migrates legacy history before restoring a writable session", async () => {
