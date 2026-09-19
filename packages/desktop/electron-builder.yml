@@ -1,5 +1,6 @@
 appId: com.spherse.app
 productName: Spherse
+executableName: spherse
 directories:
   buildResources: build
   output: release
@@ -34,3 +35,12 @@ win:
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
+linux:
+  icon: build/spherse-icon.png
+  category: Utility
+  maintainer: Spherse <noreply@spherse.app>
+  vendor: Spherse
+  artifactName: ${productName}-${version}-${arch}.${ext}
+  target:
+    - AppImage
+    - deb

@@ -76,6 +76,11 @@ jobs:
             artifact: exe
             arch-label: ""
             target-arch: arm64
+          - os: ubuntu-latest
+            build-args: --linux --x64
+            artifact: linux
+            arch-label: ""
+            target-arch: x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -119,17 +124,27 @@ jobs:
             npx electron-builder ${{ matrix.build-args }} --publish never
           fi
 
+      - name: Install Xvfb (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
       - name: Smoke test packaged app
-        # 只在 runner 架构与目标架构一致的 matrix job 上执行（mac arm64 / win x64）：
+        # 只在 runner 架构与目标架构一致的 matrix job 上执行（mac arm64 / win x64 / linux x64）：
         # mac intel 交叉构建需 Rosetta、win arm64 无法在 x64 runner 上运行，均跳过
         if: >-
           (runner.os == 'macOS' && matrix.target-arch == 'arm64') ||
-          (runner.os == 'Windows' && matrix.target-arch == 'x64')
+          (runner.os == 'Windows' && matrix.target-arch == 'x64') ||
+          (runner.os == 'Linux' && matrix.target-arch == 'x64')
         working-directory: packages/desktop
         shell: bash
         env:
           SPHERSE_SMOKE: "1"
-        run: SPHERSE_SMOKE_VERSION="${GITHUB_REF_NAME#v}" npx playwright test -c playwright.config.ts e2e/packaged-smoke.spec.ts
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            xvfb-run -a bash -c 'SPHERSE_SMOKE_VERSION="${GITHUB_REF_NAME#v}" npx playwright test -c playwright.config.ts e2e/packaged-smoke.spec.ts'
+          else
+            SPHERSE_SMOKE_VERSION="${GITHUB_REF_NAME#v}" npx playwright test -c playwright.config.ts e2e/packaged-smoke.spec.ts
+          fi
 
       - name: Upload macOS dmg
         if: runner.os == 'macOS'
@@ -149,6 +164,13 @@ jobs:
         # 只上传本 job arch 后缀的安装包：x64/arm64 两个 matrix job 并发运行，
         # 若按 release/*.exe 全量上传，双 arch 时产物同名会并发 --clobber 互踩（曾致 HTTP 404）
         run: gh release upload "${GITHUB_REF_NAME}" "release/*-${{ matrix.target-arch }}.exe" --clobber
+
+      - name: Upload Linux packages
+        if: runner.os == 'Linux'
+        working-directory: packages/desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" release/*.AppImage release/*.deb --clobber
 
   publish-oss:
     needs: build
@@ -178,7 +200,7 @@ jobs:
         run: |
           mkdir -p ./oss-out
           gh release download "${RELEASE_TAG}" -D ./oss-out \
-            --pattern '*.dmg' --pattern '*.exe' --clobber
+            --pattern '*.dmg' --pattern '*.exe' --pattern '*.AppImage' --clobber
 
       - name: Discover asset filenames
         id: assets
@@ -187,6 +209,7 @@ jobs:
           intel_dmg=$(basename "$(ls ./oss-out/*intel*.dmg | head -n1)")
           win_exe=$(basename "$(ls ./oss-out/*.exe | grep -v 'arm64' | head -n1)")
           win_arm64_exe=$(basename "$(ls ./oss-out/*arm64*.exe 2>/dev/null | head -n1)" 2>/dev/null || true)
+          linux_appimage=$(basename "$(ls ./oss-out/*.AppImage 2>/dev/null | head -n1)" 2>/dev/null || true)
           if [[ -z "$arm64_dmg" || -z "$intel_dmg" ]]; then
             echo "::error::Required macOS dmg assets not found in release (arm64/intel)"
             exit 1
@@ -195,11 +218,16 @@ jobs:
             echo "::error::Required x64 Windows installer not found in release assets"
             exit 1
           fi
+          if [[ -z "$linux_appimage" ]]; then
+            echo "::error::Required Linux AppImage asset not found in release"
+            exit 1
+          fi
           {
             echo "arm64_dmg=${arm64_dmg}"
             echo "intel_dmg=${intel_dmg}"
             echo "win_exe=${win_exe}"
             echo "win_arm64_exe=${win_arm64_exe}"
+            echo "linux_appimage=${linux_appimage}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Upload installers to OSS (versioned path)
@@ -231,6 +259,7 @@ jobs:
           INTEL="${BASE}/${{ steps.assets.outputs.intel_dmg }}"
           WIN="${BASE}/${{ steps.assets.outputs.win_exe }}"
           WIN_ARM64_NAME="${{ steps.assets.outputs.win_arm64_exe }}"
+          LINUX="${BASE}/${{ steps.assets.outputs.linux_appimage }}"
           if [[ -n "$WIN_ARM64_NAME" ]]; then
             jq -n \
               --arg version "$VER" \
@@ -238,7 +267,8 @@ jobs:
               --arg intel "$INTEL" \
               --arg x64 "$WIN" \
               --arg winArm64 "${BASE}/${WIN_ARM64_NAME}" \
-              '{version:$version, mac:{arm64:$arm64, intel:$intel}, win:{x64:$x64, arm64:$winArm64}}' \
+              --arg linuxX64 "$LINUX" \
+              '{version:$version, mac:{arm64:$arm64, intel:$intel}, win:{x64:$x64, arm64:$winArm64}, linux:{x64:$linuxX64}}' \
               > /tmp/latest.json
           else
             jq -n \
@@ -246,7 +276,8 @@ jobs:
               --arg arm64 "$ARM64" \
               --arg intel "$INTEL" \
               --arg x64 "$WIN" \
-              '{version:$version, mac:{arm64:$arm64, intel:$intel}, win:{x64:$x64}}' \
+              --arg linuxX64 "$LINUX" \
+              '{version:$version, mac:{arm64:$arm64, intel:$intel}, win:{x64:$x64}, linux:{x64:$linuxX64}}' \
               > /tmp/latest.json
           fi
           jq empty /tmp/latest.json
