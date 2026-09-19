@@ -59,7 +59,7 @@ Spherse 不预设唯一用途。一个项目可以是：
 > Ubuntu 23.10 及以上版本默认限制非特权 user namespace，Linux 版首次启动时若报 SUID sandbox 相关错误，请先执行以下命令后重试：
 >
 > ```bash
-> sudo sysctl -k kernel.apparmor_restrict_unprivileged_userns=0
+> sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 > ```
 
 安装后配置一个受支持的 LLM Provider API Key，即可创建项目和 Agent。
@@ -116,7 +116,7 @@ Spherse 以项目目录作为完整的分发单元。复制或分享整个目录
 
 ### 桌面运行，移动访问
 
-Spherse 提供 macOS 和 Windows 桌面应用，也可以通过带访问令牌的 Web 客户端在移动设备上连接桌面运行时。Quick Tunnel 模式可自动建立 Cloudflare Tunnel，也支持用户自行配置公网入口。
+Spherse 提供 macOS、Windows 和 Linux 桌面应用，也可以通过带访问令牌的 Web 客户端在移动设备上连接桌面运行时。Quick Tunnel 模式可自动建立 Cloudflare Tunnel，也支持用户自行配置公网入口。
 
 ## 本地开发
 

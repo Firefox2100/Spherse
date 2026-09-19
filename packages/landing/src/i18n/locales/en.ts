@@ -14,7 +14,7 @@ export const en: Record<keyof typeof zhCN, string> = {
   // Shown below the download buttons after clicking "Download for Windows": an unsigned .exe triggers a browser download warning (Delete by default) and SmartScreen, so guide the user to actively keep the file and allow it to run.
   "hero.windowsTip": "The Windows installer is not yet code-signed. When downloading, your browser may warn it “could harm your computer” and offer Delete as the default action — please choose “Keep” or “More → Keep anyway” to save it. If Windows shows “Windows protected your PC” when you run it, click “More info” → “Run anyway” to continue.",
   // Shown below the download buttons after clicking "Download for Linux": an AppImage needs the executable bit; Ubuntu 23.10+ restricts unprivileged user namespaces, so guide the user through the sysctl workaround.
-  "hero.linuxTip": "The Linux build is an AppImage: make it executable before launching (run chmod +x Spherse-*.AppImage in a terminal, or enable “Allow executing file as program” in the file properties). On Ubuntu 23.10 and later, if the app fails to start with a SUID sandbox error, run sudo sysctl -k kernel.apparmor_restrict_unprivileged_userns=0 and try again; a .deb package is available on GitHub Releases.",
+  "hero.linuxTip": "The Linux build is an AppImage: make it executable before launching (run chmod +x Spherse-*.AppImage in a terminal, or enable “Allow executing file as program” in the file properties). On Ubuntu 23.10 and later, if the app fails to start with a SUID sandbox error, run sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 and try again; a .deb package is available on GitHub Releases.",
   "hero.copyCommand": "Copy command",
   "hero.copied": "Copied",
 

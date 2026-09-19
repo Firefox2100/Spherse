@@ -396,6 +396,16 @@ describe("createUpdater", () => {
     expect(typeof u.cancelUpdate).toBe("function");
     expect(typeof u.getState).toBe("function");
   });
+
+  it("linux 与 darwin 一样对 in-app 下载/安装 no-op（不走已废弃的 electron-updater feed）", async () => {
+    const { u } = createTestUpdater();
+    await withProcess("linux", "x64", async () => {
+      await expect(u.downloadUpdate()).resolves.toBeUndefined();
+      await expect(u.installUpdate()).resolves.toBeUndefined();
+      await expect(u.cancelUpdate()).resolves.toBeUndefined();
+    });
+    expect(u.getState()).toEqual({ status: "idle" });
+  });
 });
 
 describe("startAutoUpdateChecks", () => {

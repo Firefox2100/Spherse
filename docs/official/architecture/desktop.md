@@ -73,7 +73,7 @@
 
 - **检测源统一为 OSS 清单**（mac/win/linux 同路径）：`latest.json` 的 `compareVersions` 版本比较，downloadUrl 随事件下发、经 `openExternal` 引导浏览器下载；release notes 恒空由 UI 隐藏
 - `autoDownload` / `autoInstallOnAppQuit` 均关闭，全程用户主动；`startAutoUpdateChecks` 调度自动检测：启动 5s 后首查，之后每小时 tick、距上次 ≥24h 且系统空闲 <5min（用户活动期间）才静默检测；silent 检测不改写主进程交互状态（不污染 settings 挂载恢复），`update-available` 事件携带 `silent` 标志且不被抑制，`update-not-available` / `error` 静默吞掉
-- in-app 下载/安装仅 Windows 保留（CancellationToken 完整流程），darwin 直接 no-op；dev 模式直接 upToDate
+- in-app 下载/安装仅 Windows 保留（CancellationToken 完整流程），darwin / linux 直接 no-op（更新引导走 `openExternal` 下载页）；dev 模式直接 upToDate
 - IPC 契约以事件流为唯一真相源：invoke 返回 void / state，`webContents.send` 推 5 个事件
   - renderer `useUpdateChecker` 用 `useReducer` 状态机：idle / checking / upToDate / available / downloading / downloaded / error（`errorPhase` 区分检查与下载失败）；挂载恢复只保留 available/downloading/downloaded，终态归位 idle（重开 settings 按钮恢复可点击）；忽略 silent `update-available`（避免与 toast 双弹）
   - 全局 `UpdateNoticeBridge`（App 根挂载）消费 silent `update-available`：右下角 toast「去更新」→ `openExternal` 平台下载链接（缺失回退官网），至多每天一条

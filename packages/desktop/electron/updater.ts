@@ -191,20 +191,20 @@ export function createUpdater(getWindow: () => BrowserWindow | null): Updater {
     },
 
     async downloadUpdate(): Promise<void> {
-      if (process.platform === "darwin") return;
+      if (process.platform !== "win32") return;
       currentState = { status: "downloading" };
       activeCancellationToken = new CancellationToken();
       await autoUpdater.downloadUpdate(activeCancellationToken);
     },
 
     installUpdate(): Promise<void> {
-      if (process.platform === "darwin") return Promise.resolve();
+      if (process.platform !== "win32") return Promise.resolve();
       autoUpdater.quitAndInstall();
       return Promise.resolve();
     },
 
     async cancelUpdate(): Promise<void> {
-      if (process.platform === "darwin") return;
+      if (process.platform !== "win32") return;
       activeCancellationToken?.cancel();
       activeCancellationToken = null;
       currentState = { status: "idle" };
