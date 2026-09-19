@@ -218,10 +218,9 @@ jobs:
             echo "::error::Required x64 Windows installer not found in release assets"
             exit 1
           fi
-          if [[ -z "$linux_appimage" ]]; then
-            echo "::error::Required Linux AppImage asset not found in release"
-            exit 1
-          fi
+          # linux_appimage 与 win_arm64_exe 同为可选：workflow_dispatch 重发旧 tag 时，
+          # pre-Linux 时代的 release 没有 AppImage，缺失时省略 latest.json 的 linux 键
+          # 而非硬失败（读取端对缺失键有回退）。
           {
             echo "arm64_dmg=${arm64_dmg}"
             echo "intel_dmg=${intel_dmg}"
@@ -255,30 +254,24 @@ jobs:
         run: |
           VER="${{ steps.ver.outputs.version }}"
           BASE="${OSS_PUBLIC_BASE_URL}/spherse/releases/${VER}"
-          ARM64="${BASE}/${{ steps.assets.outputs.arm64_dmg }}"
-          INTEL="${BASE}/${{ steps.assets.outputs.intel_dmg }}"
-          WIN="${BASE}/${{ steps.assets.outputs.win_exe }}"
           WIN_ARM64_NAME="${{ steps.assets.outputs.win_arm64_exe }}"
-          LINUX="${BASE}/${{ steps.assets.outputs.linux_appimage }}"
+          LINUX_APPIMAGE_NAME="${{ steps.assets.outputs.linux_appimage }}"
+          # 基础清单只含必需键，可选键（win.arm64 / linux.x64）按存在与否增量合并，
+          # 避免 arm64 × linux 的组合分支膨胀
+          jq -n \
+            --arg version "$VER" \
+            --arg arm64 "${BASE}/${{ steps.assets.outputs.arm64_dmg }}" \
+            --arg intel "${BASE}/${{ steps.assets.outputs.intel_dmg }}" \
+            --arg x64 "${BASE}/${{ steps.assets.outputs.win_exe }}" \
+            '{version:$version, mac:{arm64:$arm64, intel:$intel}, win:{x64:$x64}}' \
+            > /tmp/latest.json
           if [[ -n "$WIN_ARM64_NAME" ]]; then
-            jq -n \
-              --arg version "$VER" \
-              --arg arm64 "$ARM64" \
-              --arg intel "$INTEL" \
-              --arg x64 "$WIN" \
-              --arg winArm64 "${BASE}/${WIN_ARM64_NAME}" \
-              --arg linuxX64 "$LINUX" \
-              '{version:$version, mac:{arm64:$arm64, intel:$intel}, win:{x64:$x64, arm64:$winArm64}, linux:{x64:$linuxX64}}' \
-              > /tmp/latest.json
-          else
-            jq -n \
-              --arg version "$VER" \
-              --arg arm64 "$ARM64" \
-              --arg intel "$INTEL" \
-              --arg x64 "$WIN" \
-              --arg linuxX64 "$LINUX" \
-              '{version:$version, mac:{arm64:$arm64, intel:$intel}, win:{x64:$x64}, linux:{x64:$linuxX64}}' \
-              > /tmp/latest.json
+            jq --arg url "${BASE}/${WIN_ARM64_NAME}" '.win.arm64 = $url' \
+              /tmp/latest.json > /tmp/latest.json.tmp && mv /tmp/latest.json.tmp /tmp/latest.json
+          fi
+          if [[ -n "$LINUX_APPIMAGE_NAME" ]]; then
+            jq --arg url "${BASE}/${LINUX_APPIMAGE_NAME}" '.linux = {x64:$url}' \
+              /tmp/latest.json > /tmp/latest.json.tmp && mv /tmp/latest.json.tmp /tmp/latest.json
           fi
           jq empty /tmp/latest.json
           /tmp/ossutil cp /tmp/latest.json "oss://${OSS_BUCKET}/spherse/latest.json" \

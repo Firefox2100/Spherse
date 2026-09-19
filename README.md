@@ -46,12 +46,20 @@ Spherse 不预设唯一用途。一个项目可以是：
 
 - **macOS**：下载对应架构的 `.dmg` 文件并拖入“应用程序”
 - **Windows**：下载 `.exe` 安装包并运行
+- **Linux**：下载 `.AppImage`（赋予可执行权限后运行）或 `.deb` 安装包
 
 > [!NOTE]
 > 当前 macOS 版本尚未使用 Apple Developer 证书签名。首次打开时如果出现“已损坏”或“无法验证开发者”提示，请在终端执行：
 >
 > ```bash
 > xattr -cr /Applications/Spherse.app
+> ```
+
+> [!NOTE]
+> Ubuntu 23.10 及以上版本默认限制非特权 user namespace，Linux 版首次启动时若报 SUID sandbox 相关错误，请先执行以下命令后重试：
+>
+> ```bash
+> sudo sysctl -k kernel.apparmor_restrict_unprivileged_userns=0
 > ```
 
 安装后配置一个受支持的 LLM Provider API Key，即可创建项目和 Agent。

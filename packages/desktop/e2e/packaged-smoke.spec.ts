@@ -54,7 +54,7 @@ async function discoverExecutable(): Promise<string> {
     return binary;
   }
   if (process.platform === "linux") {
-    const binary = path.join(releaseDir, "linux-unpacked", "spherse");
+    const binary = path.join(releaseDir, "linux-unpacked", "Spherse");
     if (!existsSync(binary)) {
       throw new Error(`packaged binary not found: ${binary}`);
     }
